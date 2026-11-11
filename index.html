@@ -1,1 +1,395 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>SK East Kamias - QR Scanner</title>
+
+  <script src="https://unpkg.com/html5-qrcode"></script>
+
+  <style>
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      padding: 20px;
+      font-family: Arial, sans-serif;
+      background: #f3f4f6;
+      color: #222;
+    }
+
+    .container {
+      max-width: 480px;
+      margin: 30px auto;
+      padding: 24px;
+      background: white;
+      border-radius: 14px;
+      box-shadow: 0 3px 15px rgba(0,0,0,0.08);
+    }
+
+    h2 {
+      text-align: center;
+      margin-top: 0;
+    }
+
+    .subtitle {
+      text-align: center;
+      color: #666;
+      font-size: 14px;
+      margin-bottom: 25px;
+    }
+
+    input, button {
+      width: 100%;
+      padding: 14px;
+      margin-top: 12px;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+
+    input {
+      border: 1px solid #ccc;
+      text-align: center;
+    }
+
+    button {
+      border: none;
+      background: #1769aa;
+      color: white;
+      font-weight: bold;
+      cursor: pointer;
+    }
+
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+
+    .secondary {
+      background: #555;
+    }
+
+    .hidden {
+      display: none;
+    }
+
+    #reader {
+      width: 100%;
+      margin-top: 20px;
+    }
+
+    .message {
+      padding: 14px;
+      margin-top: 15px;
+      border-radius: 8px;
+      text-align: center;
+      overflow-wrap: anywhere;
+    }
+
+    .success {
+      background: #e5f7eb;
+      color: #176b35;
+    }
+
+    .error {
+      background: #fde8e8;
+      color: #a52222;
+    }
+
+    .beneficiary {
+      margin-top: 20px;
+      padding: 18px;
+      border: 1px solid #ddd;
+      border-radius: 10px;
+    }
+
+    .beneficiary p {
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+    }
+
+    .label {
+      color: #666;
+      font-size: 13px;
+      margin-bottom: 3px;
+    }
+
+    .value {
+      font-size: 17px;
+      font-weight: bold;
+      margin-top: 0;
+    }
+  </style>
+</head>
+
+<body>
+
+  <div class="container">
+
+    <h2>SK East Kamias</h2>
+    <p class="subtitle">Emergency Kit Distribution<br>Beneficiary QR Scanner</p>
+
+    <section id="loginSection">
+      <h3>Officer Login</h3>
+      <p>Enter your authorized scanner PIN.</p>
+
+      <input
+        type="password"
+        id="pinInput"
+        placeholder="Enter 4-digit PIN"
+        inputmode="numeric"
+        maxlength="4"
+      >
+
+      <button id="loginButton" onclick="login()">
+        Login
+      </button>
+
+      <div id="loginMessage"></div>
+    </section>
+
+    <section id="scannerSection" class="hidden">
+
+      <h3>Scan Beneficiary QR Code</h3>
+
+      <div id="reader"></div>
+
+      <div id="result"></div>
+
+      <button
+        id="restartButton"
+        class="hidden"
+        onclick="restartScanner()"
+      >
+        Scan Next QR
+      </button>
+
+      <button class="secondary" onclick="logout()">
+        Logout
+      </button>
+
+    </section>
+
+  </div>
+
+<script>
+  const API_URL =
+    "https://empty-voice-145dsk-east-kamias-api.ianr9470.workers.dev/";
+
+  let scanner = null;
+  let sessionPin = "";
+  let isProcessing = false;
+  let isScannerRunning = false;
+
+  async function apiRequest(payload) {
+    const response = await fetch(API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json"
+      },
+      body: JSON.stringify(payload)
+    });
+
+    if (!response.ok) {
+      throw new Error("Server connection failed.");
+    }
+
+    return await response.json();
+  }
+
+  function showMessage(elementId, message, type) {
+    const element = document.getElementById(elementId);
+
+    element.className = "message " + type;
+    element.textContent = message;
+  }
+
+  async function login() {
+    const pinInput = document.getElementById("pinInput");
+    const loginButton = document.getElementById("loginButton");
+    const pin = pinInput.value.trim();
+
+    if (!/^\d{4}$/.test(pin)) {
+      showMessage(
+        "loginMessage",
+        "Please enter your 4-digit PIN.",
+        "error"
+      );
+      return;
+    }
+
+    loginButton.disabled = true;
+    loginButton.textContent = "Verifying...";
+
+    try {
+      const result = await apiRequest({
+        action: "verifyPin",
+        pin: pin
+      });
+
+      if (!result.success) {
+        showMessage("loginMessage", result.message, "error");
+        return;
+      }
+
+      sessionPin = pin;
+
+      document.getElementById("loginSection").classList.add("hidden");
+      document.getElementById("scannerSection").classList.remove("hidden");
+
+      await startScanner();
+
+    } catch (error) {
+      showMessage(
+        "loginMessage",
+        "Unable to connect to the server. Please try again.",
+        "error"
+      );
+
+    } finally {
+      loginButton.disabled = false;
+      loginButton.textContent = "Login";
+    }
+  }
+
+  async function startScanner() {
+    if (!scanner) {
+      scanner = new Html5Qrcode("reader");
+    }
+
+    try {
+      await scanner.start(
+        { facingMode: "environment" },
+        {
+          fps: 10,
+          qrbox: {
+            width: 250,
+            height: 250
+          }
+        },
+        onScanSuccess,
+        () => {}
+      );
+
+      isScannerRunning = true;
+
+    } catch (error) {
+      document.getElementById("reader").innerHTML =
+        '<div class="message error">Camera could not start. Allow camera access and reload the page.</div>';
+
+      console.error(error);
+    }
+  }
+
+  async function stopScanner() {
+    if (scanner && isScannerRunning) {
+      try {
+        await scanner.stop();
+        isScannerRunning = false;
+      } catch (error) {
+        console.error(error);
+      }
+    }
+  }
+
+  async function onScanSuccess(decodedText) {
+    if (isProcessing) return;
+
+    isProcessing = true;
+
+    await stopScanner();
+
+    document.getElementById("restartButton").classList.add("hidden");
+
+    const resultBox = document.getElementById("result");
+
+    showMessage(
+      "result",
+      "Verifying QR code...",
+      "success"
+    );
+
+    try {
+      const result = await apiRequest({
+        action: "claimByToken",
+        token: decodedText,
+        pin: sessionPin
+      });
+
+      if (!result.success) {
+        showMessage("result", result.message, "error");
+
+      } else {
+        resultBox.innerHTML = `
+          <div class="beneficiary">
+            <div class="message success">
+              CLAIM SUCCESSFUL
+            </div>
+
+            <p class="label">FULL NAME</p>
+            <p class="value">${escapeHtml(result.fullName)}</p>
+
+            <p class="label">COMPLETE ADDRESS</p>
+            <p class="value">${escapeHtml(result.address)}</p>
+          </div>
+        `;
+      }
+
+    } catch (error) {
+      showMessage(
+        "result",
+        "Server connection failed. Please try scanning again.",
+        "error"
+      );
+
+    } finally {
+      document.getElementById("restartButton").classList.remove("hidden");
+    }
+  }
+
+  async function restartScanner() {
+    if (isProcessing === false) return;
+
+    document.getElementById("result").innerHTML = "";
+    document.getElementById("restartButton").classList.add("hidden");
+
+    isProcessing = false;
+
+    await startScanner();
+  }
+
+  async function logout() {
+    await stopScanner();
+
+    sessionPin = "";
+    isProcessing = false;
+    scanner = null;
+
+    document.getElementById("reader").innerHTML = "";
+    document.getElementById("result").innerHTML = "";
+    document.getElementById("pinInput").value = "";
+
+    document.getElementById("scannerSection").classList.add("hidden");
+    document.getElementById("loginSection").classList.remove("hidden");
+    document.getElementById("loginMessage").innerHTML = "";
+  }
+
+  function escapeHtml(value) {
+    return String(value || "").replace(/[&<>"']/g, function(char) {
+      return {
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+      }[char];
+    });
+  }
+</script>
+
+</body>
+</html>
+
